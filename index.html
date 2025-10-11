@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HealthAlly - Digital Health Companion</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f9;
+        }
+        .scrollable-content {
+            max-height: calc(100vh - 10rem);
+            overflow-y: auto;
+        }
+        /* Custom scrollbar for aesthetics */
+        .scrollable-content::-webkit-scrollbar { width: 8px; }
+        .scrollable-content::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .scrollable-content::-webkit-scrollbar-track { background: #f1f5f9; }
+    </style>
+    <!-- Load Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Main Application Container -->
+    <div id="app" class="flex-grow container mx-auto p-4 md:p-8">
+        <div id="loading-screen" class="flex flex-col items-center justify-center min-h-[50vh]">
+            <svg class="animate-spin h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <p class="mt-4 text-gray-600">Initializing HealthAlly...</p>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+    <script type="module">
+        // --- MANDATORY FIREBASE IMPORTS ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, collection, setDoc, query, where, getDocs, updateDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // IMPORTANT: Use the provided global variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let currentUserId = null;
+        let userRole = 'patient'; // Default role
+        let isAuthReady = false;
+        let selectedLanguage = 'English'; // Default language
+
+        // --- LOCALIZATION MAPS ---
+        const TEXTS = {
+            'English': {
+                app_title: "HealthAlly",
+                welcome_patient: "Welcome, Patient",
+                welcome_doctor: "Welcome, Verified Doctor",
+                login_title: "Choose Your Role",
+                role_patient: "Patient: Symptom Checker & EHR Access",
+                role_doctor: "Doctor: Vetting & Patient Management",
+                symptom_checker_title: "AI Symptom Checker (Non-Diagnostic)",
+                symptom_placeholder: "Enter your symptoms here (e.g., 'fever and headache for two days')",
+                language_label: "Language for AI Response",
+                check_symptoms_btn: "Check Symptoms",
+                verif_title: "PMDC Verification",
+                verif_msg: "Please verify your PMDC number to activate your doctor profile.",
+                pmdc_label: "PMDC Number (Use PMDC-12345 to verify)",
+                verify_btn: "Verify Profile",
+                patient_id_label: "Patient ID:",
+                doctor_verif_status: "Verification Status:",
+                doctor_profile_title: "Doctor Profile",
+                ehr_title: "Electronic Health Records (Mock)",
+                ehr_last_visit: "Last Visit:",
+                ehr_diagnosis: "Diagnosis:",
+                ehr_meds: "Medication:",
+                ehr_no_records: "No Health Records Found.",
+                user_id_label: "Your User ID:",
+                view_profile: "View Profile",
+                ai_analysis_header: "AI Analysis Results",
+                localization_label: "Localization:",
+                ai_disclaimer: "IMPORTANT DISCLAIMER:",
+                loading: "Processing with Gemini AI..."
+            },
+            'Urdu (اردو)': {
+                app_title: "ہیلتھ الائی",
+                welcome_patient: "خوش آمدید، مریض",
+                welcome_doctor: "خوش آمدید، تصدیق شدہ ڈاکٹر",
+                login_title: "اپنا کردار چنیں",
+                role_patient: "مریض: علامات کا چیکر اور ای ایچ آر تک رسائی",
+                role_doctor: "ڈاکٹر: تصدیق اور مریض کا انتظام",
+                symptom_checker_title: "اے آئی علامات چیکر (غیر تشخیصی)",
+                symptom_placeholder: "اپنی علامات یہاں درج کریں (مثلاً: 'دو دن سے بخار اور سر درد')",
+                language_label: "اے آئی جواب کے لیے زبان",
+                check_symptoms_btn: "علامات چیک کریں",
+                verif_title: "پی ایم ڈی سی کی تصدیق",
+                verif_msg: "اپنے ڈاکٹر کا پروفائل فعال کرنے کے لیے اپنا پی ایم ڈی سی نمبر کی تصدیق کریں۔",
+                pmdc_label: "پی ایم ڈی سی نمبر (تصدیق کے لیے PMDC-12345 استعمال کریں)",
+                verify_btn: "پروفائل کی تصدیق کریں",
+                patient_id_label: "مریض کی شناخت:",
+                doctor_verif_status: "تصدیقی حیثیت:",
+                doctor_profile_title: "ڈاکٹر پروفائل",
+                ehr_title: "الیکٹرانک ہیلتھ ریکارڈز (ماک)",
+                ehr_last_visit: "آخری دورہ:",
+                ehr_diagnosis: "تشخیص:",
+                ehr_meds: "ادویات:",
+                ehr_no_records: "کوئی صحت کا ریکارڈ نہیں ملا۔",
+                user_id_label: "آپ کا یوزر آئی ڈی:",
+                view_profile: "پروفائل دیکھیں",
+                ai_analysis_header: "اے آئی تجزیہ کے نتائج",
+                localization_label: "لوکلائزیشن:",
+                ai_disclaimer: "اہم دستبرداری:",
+                loading: "جیمنی اے آئی کے ساتھ پروسیسنگ..."
+            },
+            'Punjabi (ਪੰਜਾਬੀ)': {
+                app_title: "ਹੈਲਥ ਅਲਾਈ",
+                welcome_patient: "ਜੀ ਆਇਆਂ ਨੂੰ, ਮਰੀਜ਼",
+                welcome_doctor: "ਜੀ ਆਇਆਂ ਨੂੰ, ਤਸਦੀਕਸ਼ੁਦਾ ਡਾਕਟਰ",
+                login_title: "ਆਪਣੀ ਭੂਮਿਕਾ ਚੁਣੋ",
+                role_patient: "ਮਰੀਜ਼: ਲੱਛਣ ਚੈੱਕਰ ਅਤੇ ਈ.ਐਚ.ਆਰ. ਪਹੁੰਚ",
+                role_doctor: "ਡਾਕਟਰ: ਜਾਂਚ ਅਤੇ ਮਰੀਜ਼ ਪ੍ਰਬੰਧਨ",
+                symptom_checker_title: "ਏ.ਆਈ. ਲੱਛਣ ਚੈੱਕਰ (ਗੈਰ-ਨਿਦਾਨਕ)",
+                symptom_placeholder: "ਆਪਣੇ ਲੱਛਣ ਇੱਥੇ ਦਾਖਲ ਕਰੋ (ਉਦਾਹਰਨ ਲਈ, 'ਦੋ ਦਿਨਾਂ ਤੋਂ ਬੁਖਾਰ ਅਤੇ ਸਿਰਦਰਦ')",
+                language_label: "ਏ.ਆਈ. ਜਵਾਬ ਲਈ ਭਾਸ਼ਾ",
+                check_symptoms_btn: "ਲੱਛਣਾਂ ਦੀ ਜਾਂਚ ਕਰੋ",
+                verif_title: "ਪੀ.ਐਮ.ਡੀ.ਸੀ. ਦੀ ਪੁਸ਼ਟੀ",
+                verif_msg: "ਕਿਰਪਾ ਕਰਕੇ ਆਪਣਾ ਡਾਕਟਰ ਪ੍ਰੋਫਾਈਲ ਐਕਟੀਵੇਟ ਕਰਨ ਲਈ ਆਪਣਾ ਪੀ.ਐਮ.ਡੀ.ਸੀ. ਨੰਬਰ ਦੀ ਪੁਸ਼ਟੀ ਕਰੋ।",
+                pmdc_label: "ਪੀ.ਐਮ.ਡੀ.ਸੀ. ਨੰਬਰ (ਪੁਸ਼ਟੀ ਕਰਨ ਲਈ PMDC-12345 ਵਰਤੋ)",
+                verify_btn: "ਪ੍ਰੋਫਾਈਲ ਦੀ ਪੁਸ਼ਟੀ ਕਰੋ",
+                patient_id_label: "ਮਰੀਜ਼ ਦੀ ਆਈ.ਡੀ.:",
+                doctor_verif_status: "ਪੁਸ਼ਟੀਕਰਨ ਸਥਿਤੀ:",
+                doctor_profile_title: "ਡਾਕਟਰ ਪ੍ਰੋਫਾਈਲ",
+                ehr_title: "ਇਲੈਕਟ੍ਰਾਨਿਕ ਹੈਲਥ ਰਿਕਾਰਡ (ਮੌਕ)",
+                ehr_last_visit: "ਆਖਰੀ ਮੁਲਾਕਾਤ:",
+                ehr_diagnosis: "ਨਿਦਾਨ:",
+                ehr_meds: "ਦਵਾਈ:",
+                ehr_no_records: "ਕੋਈ ਸਿਹਤ ਰਿਕਾਰਡ ਨਹੀਂ ਮਿਲਿਆ।",
+                user_id_label: "ਤੁਹਾਡਾ ਯੂਜ਼ਰ ਆਈ.ਡੀ.:",
+                view_profile: "ਪ੍ਰੋਫਾਈਲ ਦੇਖੋ",
+                ai_analysis_header: "ਏ.ਆਈ. ਵਿਸ਼ਲੇਸ਼ਣ ਦੇ ਨਤੀਜੇ",
+                localization_label: "ਸਥਾਨੀਕਰਨ:",
+                ai_disclaimer: "ਮਹੱਤਵਪੂਰਨ ਅਸਵੀਕਰਨ:",
+                loading: "ਜੈਮਿਨੀ ਏ.ਆਈ. ਨਾਲ ਪ੍ਰੋਸੈਸਿੰਗ..."
+            }
+        };
+
+        // --- UTILITY FUNCTIONS ---
+
+        /** Shows a temporary toast notification */
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const color = type === 'error' ? 'bg-red-500' : type === 'warning' ? 'bg-yellow-500' : 'bg-green-500';
+            const toast = document.createElement('div');
+            toast.className = `p-4 rounded-lg shadow-lg text-white ${color} transition-all duration-300 ease-in-out transform translate-y-0 opacity-100`;
+            toast.textContent = message;
+
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', 'translate-y-4');
+                toast.addEventListener('transitionend', () => toast.remove());
+            }, 5000);
+        }
+
+        /** Gets the localized string */
+        const T = (key) => TEXTS[selectedLanguage][key] || TEXTS['English'][key];
+
+        /** Renders the main application based on the current state (role, language) */
+        function renderApp() {
+            if (!isAuthReady) {
+                return; // Wait for authentication
+            }
+
+            const appDiv = document.getElementById('app');
+            appDiv.innerHTML = '';
+            
+            // Header
+            let header = `
+                <header class="mb-6 p-4 bg-white rounded-xl shadow-md flex justify-between items-center">
+                    <h1 class="text-3xl font-bold text-indigo-700">${T('app_title')}</h1>
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <label for="language-select" class="text-sm font-medium text-gray-700 hidden md:block">${T('localization_label')}</label>
+                            <select id="language-select" class="p-2 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+                                <option value="English" ${selectedLanguage === 'English' ? 'selected' : ''}>English</option>
+                                <option value="Urdu (اردو)" ${selectedLanguage === 'Urdu (اردو)' ? 'selected' : ''}>Urdu (اردو)</option>
+                                <option value="Punjabi (ਪੰਜਾਬੀ)" ${selectedLanguage === 'Punjabi (ਪੰਜਾਬੀ)' ? 'selected' : ''}>Punjabi (ਪੰਜਾਬੀ)</option>
+                            </select>
+                        </div>
+                        <button id="view-profile-btn" class="px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-600 transition duration-150">${T('view_profile')}</button>
+                    </div>
+                </header>
+            `;
+            appDiv.innerHTML += header;
+
+            // Main content rendering logic
+            if (currentUserId === null) {
+                appDiv.innerHTML += renderLoginScreen();
+            } else if (userRole === 'patient') {
+                appDiv.innerHTML += renderPatientDashboard();
+            } else if (userRole === 'doctor') {
+                appDiv.innerHTML += renderDoctorDashboard();
+            }
+
+            // Re-bind events after rendering
+            document.getElementById('language-select').addEventListener('change', (e) => {
+                selectedLanguage = e.target.value;
+                localStorage.setItem('healthally_language', selectedLanguage);
+                renderApp();
+            });
+            document.getElementById('view-profile-btn').addEventListener('click', () => {
+                // Simple state change to demonstrate navigation
+                if (currentUserId) {
+                    userRole = userRole === 'patient' ? 'doctor' : 'patient';
+                    renderApp();
+                } else {
+                    currentUserId = null; // Go back to login if somehow lost auth
+                    renderApp();
+                }
+            });
+
+            // Initialize icons
+            lucide.createIcons();
+        }
+
+        function renderLoginScreen() {
+            return `
+                <div class="flex flex-col items-center justify-center min-h-[70vh] p-4">
+                    <h2 class="text-4xl font-extrabold text-gray-800 mb-8">${T('login_title')}</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl w-full">
+                        
+                        <!-- Patient Role Card -->
+                        <div id="login-patient-btn" class="cursor-pointer p-8 bg-white rounded-xl shadow-2xl hover:shadow-indigo-300 transition-all duration-300 transform hover:-translate-y-1 border-4 border-transparent hover:border-indigo-500">
+                            <div class="text-center">
+                                <i data-lucide="stethoscope" class="w-12 h-12 text-indigo-500 mx-auto mb-4"></i>
+                                <h3 class="text-2xl font-semibold mb-2">${T('welcome_patient')}</h3>
+                                <p class="text-gray-600">${T('role_patient')}</p>
+                            </div>
+                        </div>
+
+                        <!-- Doctor Role Card -->
+                        <div id="login-doctor-btn" class="cursor-pointer p-8 bg-white rounded-xl shadow-2xl hover:shadow-indigo-300 transition-all duration-300 transform hover:-translate-y-1 border-4 border-transparent hover:border-indigo-500">
+                            <div class="text-center">
+                                <i data-lucide="user-check" class="w-12 h-12 text-green-500 mx-auto mb-4"></i>
+                                <h3 class="text-2xl font-semibold mb-2">${T('welcome_doctor')}</h3>
+                                <p class="text-gray-600">${T('role_doctor')}</p>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPatientDashboard() {
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <!-- Column 1: Symptom Checker -->
+                    <div class="lg:col-span-1 p-6 bg-white rounded-xl shadow-lg h-full">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="thermometer" class="w-6 h-6 mr-2 text-red-500"></i>
+                            ${T('symptom_checker_title')}
+                        </h2>
+                        
+                        <div class="mb-4">
+                            <label for="symptom-input" class="block text-sm font-medium text-gray-700 mb-1">${T('symptom_placeholder')}</label>
+                            <textarea id="symptom-input" rows="4" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 placeholder-gray-500"></textarea>
+                        </div>
+
+                        <div class="mb-6">
+                            <label for="ai-language-select" class="block text-sm font-medium text-gray-700 mb-1">${T('language_label')}</label>
+                            <select id="ai-language-select" class="w-full p-3 border border-gray-300 rounded-lg text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500">
+                                <option value="English" ${selectedLanguage === 'English' ? 'selected' : ''}>English</option>
+                                <option value="Urdu" ${selectedLanguage.includes('Urdu') ? 'selected' : ''}>Urdu</option>
+                                <option value="Punjabi" ${selectedLanguage.includes('Punjabi') ? 'selected' : ''}>Punjabi</option>
+                            </select>
+                        </div>
+
+                        <button id="check-symptoms-btn" class="w-full px-4 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-lg hover:bg-indigo-700 transition duration-150 flex items-center justify-center" disabled>
+                            <i data-lucide="zap" class="w-5 h-5 mr-2"></i>
+                            <span id="ai-button-text">${T('check_symptoms_btn')}</span>
+                        </button>
+                    </div>
+
+                    <!-- Column 2 & 3: AI Results and EHR -->
+                    <div class="lg:col-span-2 space-y-8">
+                        
+                        <!-- AI Analysis Results -->
+                        <div id="ai-analysis-card" class="p-6 bg-white rounded-xl shadow-lg scrollable-content">
+                            <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                                <i data-lucide="bot" class="w-6 h-6 mr-2 text-indigo-500"></i>
+                                ${T('ai_analysis_header')}
+                            </h2>
+                            <div id="ai-analysis-results" class="text-gray-700 min-h-[100px]">
+                                <p class="italic text-gray-500">Run the symptom checker to see preliminary analysis from the Gemini AI.</p>
+                            </div>
+                        </div>
+
+                        <!-- EHR Mock -->
+                        <div class="p-6 bg-white rounded-xl shadow-lg scrollable-content">
+                            <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                                <i data-lucide="file-text" class="w-6 h-6 mr-2 text-teal-500"></i>
+                                ${T('ehr_title')}
+                            </h2>
+                            <p class="text-sm text-gray-500 mb-4">${T('user_id_label')} <span class="font-mono text-xs text-indigo-600 break-all">${currentUserId}</span></p>
+                            <div id="ehr-records" class="space-y-4">
+                                <!-- EHR records loaded here via onSnapshot -->
+                                <p class="text-gray-500">${T('ehr_no_records')}</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDoctorDashboard() {
+            return `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <!-- Column 1: PMDC Verification & Profile -->
+                    <div class="lg:col-span-1 p-6 bg-white rounded-xl shadow-lg h-full">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="user-shield" class="w-6 h-6 mr-2 text-green-600"></i>
+                            ${T('doctor_profile_title')}
+                        </h2>
+                        <p class="text-sm text-gray-500 mb-4">${T('user_id_label')} <span class="font-mono text-xs text-indigo-600 break-all">${currentUserId}</span></p>
+
+                        <div id="doctor-verification-ui">
+                            <!-- Verification UI or Status loaded here -->
+                            <p class="text-center text-gray-500 mt-8">Loading verification status...</p>
+                        </div>
+                    </div>
+
+                    <!-- Column 2 & 3: Patient Records -->
+                    <div class="lg:col-span-2 p-6 bg-white rounded-xl shadow-lg scrollable-content">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                            <i data-lucide="users" class="w-6 h-6 mr-2 text-blue-500"></i>
+                            Patient Management (Mock List)
+                        </h2>
+                        <div id="patient-list" class="space-y-4">
+                            <!-- Mock patient list loaded here via onSnapshot -->
+                            <p class="text-gray-500">Loading patient records...</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+
+        // --- FIREBASE AND AUTHENTICATION ---
+
+        /** Initializes Firebase and handles the initial sign-in */
+        async function initializeFirebaseAndAuth() {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // Enable debug logging for Firestore
+                setLogLevel('Debug');
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                        // Set the default role based on a check (simplified for MVP)
+                        // The mock doctor ID is for testing the PMDC verification logic
+                        if (user.uid === 'doctor-test-id') {
+                            userRole = 'doctor';
+                            // Initial setup for the mock doctor profile if it doesn't exist
+                            await setupDoctorProfile(user.uid);
+                        } else {
+                            userRole = 'patient';
+                        }
+                    } else {
+                        // Attempt to sign in using the custom token or anonymously
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                    
+                    // Once auth state is settled, mark as ready and render
+                    if (!isAuthReady) {
+                        isAuthReady = true;
+                        document.getElementById('loading-screen').remove();
+                        // Load stored language preference
+                        selectedLanguage = localStorage.getItem('healthally_language') || 'English';
+                        renderApp();
+                        
+                        // Attach listeners only after initial render
+                        if (currentUserId) {
+                            attachFirestoreListeners();
+                        }
+                    }
+                });
+                
+            } catch (error) {
+                console.error("Firebase Initialization or Auth Error:", error);
+                showToast(`Initialization Error: ${error.message}`, 'error');
+            }
+        }
+        
+        // Mock profile creation for testing the verification flow
+        async function setupDoctorProfile(doctorId) {
+            const doctorRef = doc(db, 'artifacts', appId, 'public', 'data', 'doctor_profiles', doctorId);
+            try {
+                 // Check if profile exists before setting to avoid overwriting verification status
+                const snap = await getDoc(doctorRef);
+                if (!snap.exists()) {
+                    await setDoc(doctorRef, {
+                        name: 'Dr. Ayesha Khan (Mock)',
+                        pmdc_number: 'N/A',
+                        is_pmdc_verified: false,
+                        specialization: 'General Practice',
+                        uid: doctorId
+                    });
+                }
+            } catch (error) {
+                console.error("Error setting up doctor profile:", error);
+            }
+        }
+
+
+        // --- FIRESTORE LISTENERS ---
+
+        /** Attaches all real-time Firestore listeners based on the current role */
+        function attachFirestoreListeners() {
+            if (!db || !currentUserId) return;
+
+            if (userRole === 'patient') {
+                // Listen to patient's mock EHR
+                const ehrRef = collection(db, 'artifacts', appId, 'users', currentUserId, 'health_records');
+                onSnapshot(ehrRef, (snapshot) => {
+                    const records = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    renderEHR(records);
+                }, (error) => {
+                    console.error("EHR listener error:", error);
+                });
+                
+                // Set up a mock record if none exists for the anonymous user
+                if (currentUserId !== 'doctor-test-id') { // Don't mess with the doctor's data
+                    const mockRef = doc(db, 'artifacts', appId, 'users', currentUserId, 'health_records', 'mock-record-1');
+                    setDoc(mockRef, {
+                        last_visit: '2024-09-15',
+                        diagnosis: 'Seasonal Flu (Urdu: موسمی فلو)',
+                        medication: ['Paracetamol', 'Cough Syrup'],
+                        doctor: 'Dr. Sample'
+                    }, { merge: true }).catch(e => console.error("Mock record set error:", e));
+                }
+
+            } else if (userRole === 'doctor') {
+                // Listen to the doctor's verification status
+                const doctorRef = doc(db, 'artifacts', appId, 'public', 'data', 'doctor_profiles', currentUserId);
+                onSnapshot(doctorRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        renderDoctorVerification(docSnap.data());
+                        renderPatientListMock(docSnap.data().is_pmdc_verified);
+                    }
+                }, (error) => {
+                    console.error("Doctor profile listener error:", error);
+                });
+            }
+        }
+
+        /** Renders the patient's EHR data */
+        function renderEHR(records) {
+            const container = document.getElementById('ehr-records');
+            if (!container) return;
+            container.innerHTML = '';
+            
+            if (records.length === 0) {
+                container.innerHTML = `<p class="text-gray-500 italic">${T('ehr_no_records')}</p>`;
+                return;
+            }
+
+            records.sort((a, b) => new Date(b.last_visit) - new Date(a.last_visit));
+
+            records.forEach(record => {
+                container.innerHTML += `
+                    <div class="border border-indigo-200 p-4 rounded-lg bg-indigo-50 shadow-sm">
+                        <p class="text-sm font-semibold text-indigo-700">${T('ehr_last_visit')} <span class="font-normal text-gray-800">${record.last_visit}</span></p>
+                        <p class="text-sm font-semibold text-indigo-700">${T('ehr_diagnosis')} <span class="font-normal text-gray-800">${record.diagnosis}</span></p>
+                        <p class="text-sm font-semibold text-indigo-700">${T('ehr_meds')} <span class="font-normal text-gray-800">${record.medication ? record.medication.join(', ') : 'N/A'}</span></p>
+                        <p class="text-xs text-gray-500 mt-2">Doctor: ${record.doctor || 'Unknown'}</p>
+                    </div>
+                `;
+            });
+        }
+        
+        /** Renders the doctor's verification UI or status */
+        function renderDoctorVerification(profile) {
+            const container = document.getElementById('doctor-verification-ui');
+            if (!container) return;
+            container.innerHTML = '';
+
+            if (profile.is_pmdc_verified) {
+                container.innerHTML = `
+                    <div class="text-center p-6 bg-green-50 rounded-lg border-2 border-green-300">
+                        <i data-lucide="check-circle" class="w-10 h-10 text-green-600 mx-auto mb-3"></i>
+                        <h3 class="text-xl font-bold text-green-700 mb-2">${T('welcome_doctor')}</h3>
+                        <p class="text-gray-700 mb-1">Dr. ${profile.name}</p>
+                        <p class="text-sm font-medium text-gray-600">${T('doctor_verif_status')} <span class="text-green-600 font-bold">VERIFIED</span></p>
+                        <p class="text-xs text-gray-500 mt-2">PMDC: ${profile.pmdc_number}</p>
+                    </div>
+                `;
+            } else {
+                // Show verification form
+                container.innerHTML = `
+                    <div class="p-4 bg-yellow-50 rounded-lg border border-yellow-300 mb-6">
+                        <p class="text-sm font-medium text-yellow-800 flex items-start">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 mr-2 flex-shrink-0"></i>
+                            ${T('verif_msg')}
+                        </p>
+                    </div>
+
+                    <form id="pmdc-verify-form">
+                        <div class="mb-4">
+                            <label for="pmdc-input" class="block text-sm font-medium text-gray-700 mb-1">${T('pmdc_label')}</label>
+                            <input type="text" id="pmdc-input" value="PMDC-12345" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500">
+                        </div>
+                        <button type="submit" id="verify-pmdc-btn" class="w-full px-4 py-3 bg-green-600 text-white font-bold rounded-lg shadow-lg hover:bg-green-700 transition duration-150 flex items-center justify-center">
+                            <i data-lucide="shield-check" class="w-5 h-5 mr-2"></i>
+                            ${T('verify_btn')}
+                        </button>
+                    </form>
+                `;
+                document.getElementById('pmdc-verify-form').addEventListener('submit', handlePmdcVerification);
+            }
+            lucide.createIcons();
+        }
+        
+        /** Renders a mock list of patients for the verified doctor */
+        function renderPatientListMock(isVerified) {
+            const container = document.getElementById('patient-list');
+            if (!container) return;
+            container.innerHTML = '';
+
+            if (!isVerified) {
+                container.innerHTML = `<div class="text-center p-8 text-gray-500 italic">Please complete PMDC verification to view patient records.</div>`;
+                return;
+            }
+
+            // Mock list of patient IDs (could be fetched from a dedicated collection in a full app)
+            const mockPatients = [
+                { id: 'pat_4829', name: 'Zainab B.' },
+                { id: 'pat_1104', name: 'Ali K.' },
+                { id: 'pat_7391', name: 'Fatima N.' },
+            ];
+
+            mockPatients.forEach(patient => {
+                container.innerHTML += `
+                    <div class="flex justify-between items-center p-4 bg-gray-50 rounded-lg border border-gray-200 hover:bg-gray-100 transition duration-150">
+                        <div>
+                            <p class="font-semibold text-gray-800">${patient.name}</p>
+                            <p class="text-sm text-gray-500">${T('patient_id_label')} ${patient.id}</p>
+                        </div>
+                        <button class="px-3 py-1 text-sm bg-blue-500 text-white rounded-full hover:bg-blue-600 transition">View EHR</button>
+                    </div>
+                `;
+            });
+        }
+
+        // --- CLOUD FUNCTION HANDLERS ---
+        
+        /** Determines the base URL for Cloud Functions based on environment (local emulator vs. deployed) */
+        function getFunctionUrl(functionName) {
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            
+            if (isLocal) {
+                // Use the Firebase Functions Emulator port 5001
+                return `http://localhost:5001/${firebaseConfig.projectId}/us-central1/${functionName}`;
+            } else {
+                // Use the deployed function URL (rewrites handle the full URL on deployment)
+                return `/${functionName}`;
+            }
+        }
+        
+        /** Handles the PMDC verification request to the Python backend */
+        async function handlePmdcVerification(event) {
+            event.preventDefault();
+            
+            const pmdcInput = document.getElementById('pmdc-input');
+            const verifyBtn = document.getElementById('verify-pmdc-btn');
+            const pmdcNumber = pmdcInput.value.trim();
+
+            if (!pmdcNumber) {
+                showToast("PMDC number cannot be empty.", 'warning');
+                return;
+            }
+
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 mr-2 animate-spin"></i> Verifying...`;
+
+            try {
+                const response = await fetch(getFunctionUrl('pmdcVerify'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        doctorId: currentUserId, 
+                        pmdcNumber: pmdcNumber,
+                        appId: appId 
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok && data.verified) {
+                    showToast(data.message, 'success');
+                    // The onSnapshot listener will automatically update the UI upon Firestore change
+                } else if (response.ok) {
+                    showToast(data.message, 'warning');
+                } else {
+                    showToast(`Verification Failed: ${data.error || 'Server error.'}`, 'error');
+                }
+            } catch (error) {
+                console.error("Verification fetch error:", error);
+                showToast("Network Error: Could not connect to verification service.", 'error');
+            } finally {
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = `<i data-lucide="shield-check" class="w-5 h-5 mr-2"></i> ${T('verify_btn')}`;
+                lucide.createIcons();
+            }
+        }
+
+        /** Handles the AI Symptom Checker request to the Python backend */
+        async function handleSymptomCheck() {
+            const symptomInput = document.getElementById('symptom-input');
+            const aiLanguageSelect = document.getElementById('ai-language-select');
+            const resultDiv = document.getElementById('ai-analysis-results');
+            const checkBtn = document.getElementById('check-symptoms-btn');
+            const buttonText = document.getElementById('ai-button-text');
+            
+            const symptoms = symptomInput.value.trim();
+            const language = aiLanguageSelect.value;
+
+            if (!symptoms) {
+                showToast("Please enter your symptoms before checking.", 'warning');
+                return;
+            }
+
+            checkBtn.disabled = true;
+            buttonText.textContent = T('loading');
+            resultDiv.innerHTML = `<div class="text-center p-4"><svg class="animate-spin h-6 w-6 text-indigo-600 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><p class="mt-2 text-indigo-600 text-sm">Analyzing symptoms...</p></div>`;
+
+
+            try {
+                const response = await fetch(getFunctionUrl('aiSymptomCheck'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        symptoms: symptoms,
+                        language: language
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    // Replace markdown bolding for the disclaimer to ensure it stands out in HTML
+                    const htmlContent = data.analysis.replace(
+                        /\*\*(IMPORTANT DISCLAIMER|اہم دستبرداری|ਮਹੱਤਵਪੂਰਨ ਅਸਵੀਕਰਨ):/g,
+                        '<p class="text-red-600 font-extrabold mt-4 mb-2 p-2 bg-red-50 rounded-lg border-l-4 border-red-500 flex items-center"><i data-lucide="alert-triangle" class="w-5 h-5 mr-2"></i> $1:</p>'
+                    ).replace(/\n/g, '<br>'); // Convert newlines for basic HTML display
+
+                    resultDiv.innerHTML = htmlContent;
+                    showToast(`AI Analysis complete in ${language}.`, 'success');
+                } else {
+                    resultDiv.innerHTML = `<p class="text-red-500">Error: ${data.error || 'Could not process AI request.'}</p>`;
+                    showToast(data.error || 'AI analysis failed.', 'error');
+                }
+            } catch (error) {
+                console.error("AI check fetch error:", error);
+                resultDiv.innerHTML = `<p class="text-red-500">Network Error: Could not connect to the AI service. Please ensure Firebase Emulators are running.</p>`;
+                showToast("Network Error: Failed to reach the AI service.", 'error');
+            } finally {
+                checkBtn.disabled = false;
+                buttonText.textContent = T('check_symptoms_btn');
+                lucide.createIcons();
+            }
+        }
+
+
+        // --- ENTRY POINT ---
+        window.onload = () => {
+            initializeFirebaseAndAuth();
+
+            // Event listeners for patient dashboard elements, bound conditionally after render
+            document.getElementById('app').addEventListener('click', (e) => {
+                if (e.target.closest('#login-patient-btn')) {
+                    currentUserId = 'anonymous-patient-123'; // Mock ID for demo
+                    userRole = 'patient';
+                    renderApp();
+                    attachFirestoreListeners();
+                } else if (e.target.closest('#login-doctor-btn')) {
+                    currentUserId = 'doctor-test-id'; // Mock ID for PMDC test
+                    userRole = 'doctor';
+                    renderApp();
+                    attachFirestoreListeners();
+                } else if (e.target.closest('#check-symptoms-btn')) {
+                    handleSymptomCheck();
+                }
+            });
+            
+            // Re-enable button on render once auth is done (default state)
+            const checkBtn = document.getElementById('check-symptoms-btn');
+            if (checkBtn) checkBtn.disabled = false;
+        };
+
+    </script>
+</body>
+</html>
