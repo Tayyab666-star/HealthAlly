@@ -1,33 +1,42 @@
 import os
+import time
 import functions_framework
 import json
 import requests
-# Note: For Firebase Admin SDK to work in a Cloud Function environment, 
-# initialization must be handled carefully.
-from firebase_admin import initialize_app, firestore
+from firebase_admin import initialize_app, firestore, get_app, credentials
 from google.cloud.firestore import Client, DocumentReference
 from flask import jsonify
 
 # --- API Configuration ---
-# The API key will be automatically provided by the Canvas environment when deployed.
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent"
-# NOTE: The Canvas environment will handle key injection for us, so we leave it as an empty string.
-API_KEY = os.environ.get("API_KEY", "") 
+API_KEY = os.environ.get("API_KEY", "")
 
 # --- FIREBASE ADMIN SETUP ---
-# Initialize Firebase Admin SDK (required for secure backend access to Firestore)
-# Logic to handle both local emulator and deployed environment initialization
+# Initialize Firebase Admin SDK
 try:
-    if not firestore._app_instance: 
-        initialize_app()
+    # Try to get existing app
+    app = get_app()
     db: Client = firestore.client()
 except ValueError:
-    # If already initialized (e.g., in an emulator), just get the client
+    # No app exists, initialize it
+    # Get the directory where this script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up one level to the parent directory and look for serviceAccountKey.json
+    parent_dir = os.path.dirname(current_dir)
+    service_account_path = os.path.join(parent_dir, 'serviceAccountKey.json')
+    
+    if os.path.exists(service_account_path):
+        # Local development with service account key
+        cred = credentials.Certificate(service_account_path)
+        initialize_app(cred)
+    else:
+        # Cloud Functions environment (uses default credentials)
+        initialize_app()
+    
     db: Client = firestore.client()
 
 def handle_cors(request):
     """Handles CORS preflight requests and sets necessary headers."""
-    # If this is an OPTIONS request, send the preflight response
     if request.method == 'OPTIONS':
         headers = {
             'Access-Control-Allow-Origin': '*',
@@ -36,8 +45,7 @@ def handle_cors(request):
             'Access-Control-Max-Age': '3600'
         }
         return ('', 204, headers)
-    # For all other requests, set the necessary CORS header
-    return {'Access-Control-Allow-Origin': '*'} 
+    return {'Access-Control-Allow-Origin': '*'}
 
 @functions_framework.http
 def pmdc_verify_doctor(request):
@@ -46,7 +54,8 @@ def pmdc_verify_doctor(request):
     and update their Firestore profile.
     """
     headers = handle_cors(request)
-    if isinstance(headers, tuple): return headers # Return if it was an OPTIONS request
+    if isinstance(headers, tuple):
+        return headers
 
     try:
         request_json = request.get_json(silent=True)
@@ -55,19 +64,17 @@ def pmdc_verify_doctor(request):
 
         doctor_id = request_json.get('doctorId')
         pmdc_number = request_json.get('pmdcNumber')
-        app_id = request_json.get('appId') # Used to construct the Firestore path
+        app_id = request_json.get('appId')
 
         if not doctor_id or not pmdc_number or not app_id:
             return (jsonify({"error": "Missing doctorId, pmdcNumber, or appId."}), 400, headers)
 
-        # Mock Verification Logic: PMDC-12345 passes, anything else fails
+        # Mock Verification Logic
         is_verified = pmdc_number == "PMDC-12345"
         
         if is_verified:
-            # Construct the secure path using the provided appId
             doctor_ref: DocumentReference = db.document(f'artifacts/{app_id}/public/data/doctor_profiles/{doctor_id}')
             
-            # Use update for atomic, server-side data modification
             doctor_ref.update({
                 'is_pmdc_verified': True,
                 'verification_date': firestore.SERVER_TIMESTAMP,
@@ -94,14 +101,13 @@ def pmdc_verify_doctor(request):
 def ai_symptom_checker(request):
     """
     HTTP Cloud Function to securely call the Gemini API for symptom analysis.
-    This function uses a strict system prompt to mitigate health-related risks.
     """
     headers = handle_cors(request)
-    if isinstance(headers, tuple): return headers
-    headers['Content-Type'] = 'application/json' # Ensure JSON content type for the main response
+    if isinstance(headers, tuple):
+        return headers
+    headers['Content-Type'] = 'application/json'
 
     try:
-        # 1. Input Validation and Parsing
         request_json = request.get_json(silent=True)
         if not request_json:
             return (jsonify({"error": "No JSON payload provided."}), 400, headers)
@@ -111,8 +117,10 @@ def ai_symptom_checker(request):
 
         if not symptoms:
             return (jsonify({"error": "Missing symptoms input."}), 400, headers)
+        
+        if not API_KEY:
+            return (jsonify({"error": "API_KEY not configured."}), 500, headers)
             
-        # 2. Prepare Gemini API Payload with strong safety constraints
         system_prompt = (
             "You are HealthAlly, a culturally sensitive, preliminary AI health guide. "
             "You MUST be extremely cautious and non-diagnostic. Your response MUST be in the requested language, which is "
@@ -129,33 +137,26 @@ def ai_symptom_checker(request):
         payload = {
             "contents": [{"parts": [{"text": user_query}]}],
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "tools": [{"google_search": {}}] # Use Google Search for grounding
+            "tools": [{"google_search": {}}]
         }
 
-        # 3. Call Gemini API with exponential backoff for reliability
-        
         gemini_response = None
         max_retries = 3
         
         for attempt in range(max_retries):
             try:
-                gemini_response = requests.post(f"{GEMINI_API_URL}?key={API_KEY}", json=payload)
-                gemini_response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
-                break # Success
+                gemini_response = requests.post(f"{GEMINI_API_URL}?key={API_KEY}", json=payload, timeout=30)
+                gemini_response.raise_for_status()
+                break
             except requests.exceptions.RequestException as e:
-                # Log error silently and retry if not the last attempt
                 if attempt < max_retries - 1:
-                    import time
-                    time.sleep(2 ** attempt) # Exponential backoff: 1s, 2s, 4s...
+                    time.sleep(2 ** attempt)
                 else:
-                    raise e # Re-raise if all retries fail
+                    raise e
 
         result = gemini_response.json()
-        
-        # Extract text
         generated_text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'Error: Could not retrieve AI analysis.')
 
-        # 4. Return the AI response
         return (jsonify({
             "success": True,
             "analysis": generated_text
@@ -163,7 +164,7 @@ def ai_symptom_checker(request):
 
     except requests.exceptions.HTTPError as http_err:
         print(f"HTTP error calling Gemini API: {http_err}. Response: {getattr(gemini_response, 'text', 'N/A')}")
-        return (jsonify({"error": f"AI service error: {http_err}"}), gemini_response.status_code if 'gemini_response' in locals() else 500, headers)
+        return (jsonify({"error": f"AI service error: {http_err}"}), gemini_response.status_code if gemini_response else 500, headers)
     except Exception as e:
         print(f"An error occurred during AI analysis: {e}")
         return (jsonify({"error": f"Internal Server Error: {str(e)}"}), 500, headers)
